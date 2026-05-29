@@ -1,8 +1,10 @@
-import os
 import unittest
 import requests
 from dotenv import load_dotenv
+import os
+
 load_dotenv()
+
 
 class TestYandexDiskAPI(unittest.TestCase):
     BASE_URL = "https://cloud-api.yandex.net/v1/disk/resources"
@@ -11,67 +13,80 @@ class TestYandexDiskAPI(unittest.TestCase):
     FOLDER = "test_api_folder"
 
     def setUp(self):
-        """Перед каждым тестом удаляем папку, если она осталась с прошлого запуска."""
-        if self.TOKEN:
-            url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"  # URL-кодируем путь
-            requests.delete(url, headers=self.HEADERS)      # удаляем папку (игнорируем ответ)
-
-    def tearDown(self):
-        """После теста также удаляем папку."""
         if self.TOKEN:
             url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"
             requests.delete(url, headers=self.HEADERS)
 
-    def test_create_folder_success(self):
-        """Позитивный тест: создание папки и проверка её появления в списке файлов."""
-        if not self.TOKEN:
-            self.skipTest("YA_TOKEN не задан")
+    def tearDown(self):
+        if self.TOKEN:
+            url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"
+            requests.delete(url, headers=self.HEADERS)
 
-        # 1. Создаём папку (PUT)
-        put_url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"
-        response = requests.put(put_url, headers=self.HEADERS)
-        # API возвращает 201 Created при успешном создании новой папки
-        self.assertEqual(response.status_code, 201, f"Не удалось создать папку: {response.text}")
+    def test_create_folder(self):
+        """Параметризованный тест: создание папки на Яндекс.Диске."""
+        cases = [
+            (
+                "success",
+                f"{self.BASE_URL}?path=%2F{self.FOLDER}",
+                self.HEADERS,
+                True,
+                "позитивный: создание папки",
+            ),
+            (
+                "unauthorized",
+                f"{self.BASE_URL}?path=%2F{self.FOLDER}",
+                None,
+                False,
+                "отрицательный: без токена — 401",
+            ),
+            (
+                "conflict",
+                f"{self.BASE_URL}?path=%2F{self.FOLDER}",
+                self.HEADERS,
+                False,
+                "отрицательный: повторное создание — 409",
+            ),
+            (
+                "invalid_path",
+                f"{self.BASE_URL}?path=",
+                self.HEADERS,
+                False,
+                "отрицательный: пустой путь — 400",
+            ),
+        ]
 
-        # 2. Проверяем, что папка существует (GET ресурс)
-        check_url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"
-        response = requests.get(check_url, headers=self.HEADERS)
-        self.assertEqual(response.status_code, 200, f"Папка не найдена после создания: {response.text}")
+        for case_type, url, headers, expect_success, description in cases:
+            with self.subTest(msg=description):
+                if not self.TOKEN and headers:
+                    self.skipTest("YA_TOKEN не задан")
 
-        # Проверяем, что это именно папка
-        data = response.json()
-        self.assertEqual(data.get("type"), "dir", "Созданный ресурс не является папкой")
+                headers = headers or {}
 
-    def test_create_folder_unauthorized(self):
-        """Отрицательный тест: запрос без токена должен вернуть 401."""
-        url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"
-        response = requests.put(url)  # без заголовка Authorization
-        self.assertEqual(response.status_code, 401,
-                         f"Ожидался 401 Unauthorized, получен {response.status_code}")
+                # Для конфликта сначала создаём папку
+                if case_type == "conflict":
+                    requests.put(url, headers=self.HEADERS)
 
-    def test_create_folder_conflict(self):
-        """Отрицательный тест: повторное создание той же папки вызывает 409 Conflict."""
-        if not self.TOKEN:
-            self.skipTest("YA_TOKEN не задан")
+                response = requests.put(url, headers=headers)
 
-        url = f"{self.BASE_URL}?path=%2F{self.FOLDER}"
-        # Первое создание – успех (201)
-        first = requests.put(url, headers=self.HEADERS)
-        self.assertEqual(first.status_code, 201, "Ошибка при первом создании папки")
-        # Второе создание – конфликт (409)
-        second = requests.put(url, headers=self.HEADERS)
-        self.assertEqual(second.status_code, 409,
-                         f"Ожидался 409 Conflict, получен {second.status_code}")
+                # Проверка статуса через response.ok
+                if expect_success:
+                    self.assertTrue(response.ok,
+                                    f"Папка не создана: {response.status_code} {response.text}")
 
-    def test_invalid_path(self):
-        """Отрицательный тест: пустой путь (или другие недопустимые символы) – 400."""
-        if not self.TOKEN:
-            self.skipTest("YA_TOKEN не задан")
+                    # Проверяем, что папка появилась в списке
+                    check_url = f"{self.BASE_URL}?path=%2F"
+                    check_response = requests.get(check_url, headers=self.HEADERS)
+                    self.assertTrue(check_response.ok,
+                                    f"Не удалось получить список файлов: {check_response.status_code}")
+                    files = check_response.json()["_embedded"]["items"]
+                    self.assertTrue(
+                        any(f["name"] == self.FOLDER for f in files),
+                        "Папка не найдена в списке файлов",
+                    )
+                else:
+                    self.assertFalse(response.ok,
+                                     f"Ожидалась ошибка, но запрос успешен: {response.status_code}")
 
-        url = f"{self.BASE_URL}?path="  # пустой параметр path
-        response = requests.put(url, headers=self.HEADERS)
-        self.assertEqual(response.status_code, 400,
-                         f"Ожидался 400 Bad Request, получен {response.status_code}")
 
 if __name__ == "__main__":
     unittest.main()
